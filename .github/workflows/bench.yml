@@ -1,5 +1,8 @@
 name: ai-engine-bench
-on: workflow_dispatch
+on:
+  workflow_dispatch:
+    inputs:
+      only: { description: 'runner os 하나만(비우면 전부)', default: '' }
 jobs:
   prep:
     runs-on: ubuntu-latest
@@ -22,16 +25,21 @@ jobs:
           - { os: ubuntu-24.04-arm, ort: onnxruntime-linux-aarch64-1.17.1, ext: tgz, arch: arm64, py: true }
           - { os: windows-latest,   ort: onnxruntime-win-x64-1.17.1,       ext: zip, arch: x64,   py: true }
           - { os: windows-11-arm,   ort: onnxruntime-win-arm64-1.17.1,     ext: zip, arch: ARM64, py: false }
+          - { os: macos-15-intel,   ort: onnxruntime-osx-x86_64-1.17.1,    ext: tgz, arch: x86_64, py: true }   # Intel CPU 실측(x64 러너는 AMD EPYC)
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults: { run: { shell: bash } }
     steps:
       - uses: actions/checkout@v4
+        if: (inputs.only == '' || inputs.only == matrix.os)
       - uses: actions/setup-python@v5
+        if: (inputs.only == '' || inputs.only == matrix.os)
         with: { python-version: '3.12' }
       - uses: actions/download-artifact@v4
+        if: (inputs.only == '' || inputs.only == matrix.os)
         with: { name: prep, path: out }
       - name: python deps
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: |
           if [ "${{ matrix.py }}" = "true" ]; then
             # ORT 1.17.1 휠은 numpy 1.x 로 빌드됐다 — numpy 2 와 함께 쓰면 import 실패
@@ -41,24 +49,28 @@ jobs:
             python -m pip install -q numpy   # compare.py 만
           fi
       - name: models and images
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: bash fetch.sh
       - name: python bench (ORT 1.17.1 vs OpenVINO 기본 정밀도)
-        if: matrix.py
+        if: matrix.py && (inputs.only == '' || inputs.only == matrix.os)
         run: python bench.py models img out 3
       - name: python bench (OpenVINO f32 고정)
-        if: matrix.py
+        if: matrix.py && (inputs.only == '' || inputs.only == matrix.os)
         run: OV_PREC=f32 SKIP_ORT=1 python bench.py models img out_f32 3 && cp out_f32/py_results.json out/py_results_ov_f32.json
       - name: build ncnn 20260113 (제품과 같은 판, CPU)
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: |
           curl -sSfL -o ncnn.tar.gz https://github.com/Tencent/ncnn/archive/refs/tags/20260113.tar.gz && tar -xzf ncnn.tar.gz
           if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-A ${{ matrix.arch }}); else GEN=(); fi
           cmake -S ncnn-20260113 -B ncnn-build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DNCNN_VULKAN=OFF -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_BUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$PWD/ncnn-install > /dev/null
           cmake --build ncnn-build --config Release -j 4 --target install > ncnn-build.log 2>&1 || (tail -40 ncnn-build.log; exit 1)
       - name: ORT 1.17.1 prebuilt
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: |
           curl -sSfL -o ort.${{ matrix.ext }} https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/${{ matrix.ort }}.${{ matrix.ext }}
           if [ "${{ matrix.ext }}" = "zip" ]; then unzip -q ort.zip; else tar -xzf ort.tgz; fi
       - name: build C++ bench
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-A ${{ matrix.arch }}); else GEN=(); fi
           NCNN_CFG=$(dirname $(find $PWD/ncnn-install -name ncnnConfig.cmake | head -1))
@@ -67,6 +79,7 @@ jobs:
           BIN=$(find cpp-build -name 'bench' -type f -o -name 'bench.exe' -type f | head -1); echo "BIN=$BIN" >> $GITHUB_ENV
           if [ "$RUNNER_OS" = "Windows" ]; then cp ${{ matrix.ort }}/lib/*.dll $(dirname $BIN)/; fi
       - name: C++ bench (ncnn vs ORT, YOLOX)
+        if: (inputs.only == '' || inputs.only == matrix.os)
         run: |
           for m in nano tiny s; do S=416; [ $m = s ] && S=640
             for cfg in "ncnn 4" "ncnn 2" "ort 4" "ort 2"; do set -- $cfg
@@ -76,7 +89,7 @@ jobs:
             done
           done
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && (inputs.only == '' || inputs.only == matrix.os)
         with:
           name: results-${{ matrix.os }}
           path: out/*.json*
