@@ -1,8 +1,8 @@
 // YOLOX 엔진 비교 — 제품과 같은 ncnn(20260113, YoloV5Focus 커스텀 레이어) 대 ORT 1.17.1 CPU. Linux·Windows 공용.
 // usage: bench <ncnn|ort> <model_dir> <nano|tiny|s> <input.f32> <out.f32> <threads> <seconds>
-#include <ncnn/net.h>
-#include <ncnn/layer.h>
-#include <ncnn/cpu.h>
+#include "net.h"
+#include "layer.h"
+#include "cpu.h"
 #include <onnxruntime_cxx_api.h>
 #include <algorithm>
 #include <chrono>
