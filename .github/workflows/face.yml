@@ -1,0 +1,22 @@
+name: face-eval
+on: workflow_dispatch
+jobs:
+  face:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q numpy "opencv-python-headless==4.10.0.84" onnxruntime ncnn scikit-learn
+      - name: models (제품 CDN · 공식 배포처)
+        run: |
+          mkdir -p fm
+          for f in mobilefacenet.param mobilefacenet.bin yunet_2023mar.onnx; do curl -sSfL -o fm/$f https://downloads.grablo.co/assets/vision/$f; done
+          curl -sSfL -o fm/sface.onnx https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx
+          curl -sSfL -o fm/auraface.onnx https://huggingface.co/fal/AuraFace-v1/resolve/main/glintr100.onnx
+          sha256sum fm/*; ls -la fm
+      - run: python face_eval.py fm fout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: face-results, path: fout/*.json }
