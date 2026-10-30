@@ -1,0 +1,69 @@
+name: ai-engine-bench
+on: workflow_dispatch
+jobs:
+  bench:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest,    ort: onnxruntime-linux-x64-1.17.1,     ext: tgz, arch: x64 }
+          - { os: ubuntu-24.04-arm, ort: onnxruntime-linux-aarch64-1.17.1, ext: tgz, arch: arm64 }
+          - { os: windows-latest,   ort: onnxruntime-win-x64-1.17.1,       ext: zip, arch: x64 }
+          - { os: windows-11-arm,   ort: onnxruntime-win-arm64-1.17.1,     ext: zip, arch: ARM64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - name: python deps
+        run: |
+          python -m pip install -q numpy opencv-python-headless
+          python -m pip install -q onnxruntime==1.17.1 || python -m pip install -q onnxruntime
+          python -m pip install -q openvino || echo "openvino wheel unavailable on this runner"
+      - name: models and images (공식 출처·CDN)
+        run: |
+          mkdir -p models/lpr img
+          for m in nano tiny s; do curl -sSfL -o models/yolox_$m.onnx https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_$m.onnx; done
+          for f in yolox_nano_v2.param yolox_nano_v2.bin yolox_tiny_v2.param yolox_tiny_v2.bin yolox_s.param yolox_s.bin osnet_ain_x1_0_msmt17.onnx siglip2_b32_256_vision.onnx; do curl -sSfL -o models/$f https://downloads.grablo.co/assets/vision/$f; done
+          curl -sSfL -o lpr.tar https://downloads.grablo.co/assets/lpr/grablo-lpr-latin-v1.tar && tar -xf lpr.tar && cp grablo-lpr-latin-v1/*.onnx models/lpr/
+          curl -sSfL -o img/bus.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/bus.jpg
+          curl -sSfL -o img/dog.jpg https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/assets/dog.jpg
+          curl -sSfL -o img/zidane.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/zidane.jpg
+          curl -sSfL -o img/zz_plate.png https://raw.githubusercontent.com/ankandrew/fast-alpr/master/assets/test_image.png
+          ls -la models models/lpr img
+      - name: python bench (ORT 1.17.1 vs OpenVINO 기본 정밀도)
+        run: python bench.py models img out 3
+      - name: python bench (OpenVINO f32 고정)
+        run: OV_PREC=f32 SKIP_ORT=1 python bench.py models img out_f32 3 && cp out_f32/py_results.json out/py_results_ov_f32.json
+      - name: build ncnn 20260113 (제품과 같은 판, CPU)
+        run: |
+          curl -sSfL -o ncnn.tar.gz https://github.com/Tencent/ncnn/archive/refs/tags/20260113.tar.gz && tar -xzf ncnn.tar.gz
+          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-G "Visual Studio 17 2022" -A ${{ matrix.arch }}); else GEN=(); fi
+          cmake -S ncnn-20260113 -B ncnn-build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DNCNN_VULKAN=OFF -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_BUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$PWD/ncnn-install > /dev/null
+          cmake --build ncnn-build --config Release -j 4 --target install > ncnn-build.log 2>&1 || (tail -40 ncnn-build.log; exit 1)
+      - name: ORT 1.17.1 prebuilt
+        run: |
+          curl -sSfL -o ort.${{ matrix.ext }} https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/${{ matrix.ort }}.${{ matrix.ext }}
+          if [ "${{ matrix.ext }}" = "zip" ]; then unzip -q ort.zip; else tar -xzf ort.tgz; fi
+      - name: build C++ bench
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-G "Visual Studio 17 2022" -A ${{ matrix.arch }}); else GEN=(); fi
+          NCNN_CFG=$(dirname $(find $PWD/ncnn-install -name ncnnConfig.cmake | head -1))
+          cmake -S cpp -B cpp-build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DNCNN_DIR=$NCNN_CFG -DORT_DIR=$PWD/${{ matrix.ort }} > /dev/null
+          cmake --build cpp-build --config Release -j 4 2>&1 | tail -5
+          BIN=$(find cpp-build -name 'bench' -type f -o -name 'bench.exe' -type f | head -1); echo "BIN=$BIN" >> $GITHUB_ENV
+          if [ "$RUNNER_OS" = "Windows" ]; then cp ${{ matrix.ort }}/lib/*.dll $(dirname $BIN)/; fi
+      - name: C++ bench (ncnn vs ORT, YOLOX)
+        run: |
+          for m in nano tiny s; do S=416; [ $m = s ] && S=640
+            for cfg in "ncnn 4" "ncnn 2" "ort 4" "ort 2"; do set -- $cfg
+              line=$($BIN $1 models $m out/in$S.f32 out/cpp_$1_$m.f32 $2 3)
+              acc=$(python compare.py out yolox_$m $S out/cpp_$1_$m.f32)
+              echo "{\"cpp\":$line,\"acc\":$acc}" | tee -a out/cpp_results.jsonl
+            done
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: results-${{ matrix.os }}, path: out/*.json* }
