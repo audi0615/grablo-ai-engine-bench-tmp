@@ -35,11 +35,15 @@ def degrade(bgr, s):
 
 
 def main():
-    d = fetch_lfw_pairs(subset="10_folds", color=True, resize=1.0, slice_=None, data_home=os.path.join(O, "sk"))
-    P = d.pairs; y = d.target.astype(int)
-    if P.max() <= 1.5: P = P * 255
-    P = P.astype(np.uint8)                       # (6000, 2, 250, 250, 3) RGB
-    print(json.dumps({"pairs": int(len(y)), "same": int(y.sum())}), flush=True)
+    # sklearn 은 공식 LFW(funneled)·pairs.txt 를 받는 데만 쓴다 — 6000쌍을 한꺼번에 올리면 9GB 라 러너가 죽는다
+    fetch_lfw_pairs(subset="10_folds", resize=0.05, data_home=os.path.join(O, "sk"))
+    home = os.path.join(O, "sk", "lfw_home")
+    rows = [l.split() for l in open(os.path.join(home, "pairs.txt")).read().splitlines()[1:] if l.strip()]
+    path = lambda n, i: os.path.join(home, "lfw_funneled", n, f"{n}_{int(i):04d}.jpg")
+    pairs = [(path(r[0], r[1]), path(r[0], r[2]), 1) if len(r) == 3 else (path(r[0], r[1]), path(r[2], r[3]), 0) for r in rows]
+    y = np.array([p[2] for p in pairs]); imgs = sorted({p[k] for p in pairs for k in (0, 1)})
+    idx = {p: i for i, p in enumerate(imgs)}
+    print(json.dumps({"pairs": int(len(y)), "same": int(y.sum()), "images": len(imgs)}), flush=True)
 
     det = cv2.FaceDetectorYN.create(os.path.join(M, "yunet_2023mar.onnx"), "", (250, 250), 0.6, 0.3, 5000)
     rec_sf = cv2.FaceRecognizerSF.create(os.path.join(M, "sface.onnx"), "")
@@ -71,29 +75,27 @@ def main():
 
     MODELS = {"current_mobilefacenet": emb_current, "sface": emb_sface, "auraface": emb_aura}
 
-    # 5점은 원본에서 한 번
-    faces = np.zeros((len(y), 2, 15), np.float32); miss = 0
-    for i in range(len(y)):
-        for k in range(2):
-            f = detect(cv2.cvtColor(P[i, k], cv2.COLOR_RGB2BGR))
-            if f is None: miss += 1
-            faces[i, k] = f if f is not None else np.nan
-    print(json.dumps({"yunet_miss": miss}), flush=True)
-    ok = ~np.isnan(faces).any(axis=(1, 2))
+    # 5점은 원본에서 한 번(이미지별)
+    faces = np.full((len(imgs), 15), np.nan, np.float32)
+    for i, p in enumerate(imgs):
+        f = detect(cv2.imread(p))
+        if f is not None: faces[i] = f
+    print(json.dumps({"yunet_miss": int(np.isnan(faces).any(1).sum())}), flush=True)
+    img_ok = ~np.isnan(faces).any(1)
+    A = np.array([idx[p[0]] for p in pairs]); B = np.array([idx[p[1]] for p in pairs])
+    ok = img_ok[A] & img_ok[B]
 
-    folds = np.repeat(np.arange(10), 600)   # sklearn 10_folds 는 pairs.txt 순서 그대로 — 600쌍씩 한 fold
+    folds = np.repeat(np.arange(10), 600)   # pairs.txt: fold 마다 같은 사람 300 · 다른 사람 300, 순서대로
     results = []
     for s in SCALES:
         for name, fn in MODELS.items():
-            sims = np.full(len(y), -1.0); t = []
-            for i in np.where(ok)[0]:
-                e = []
-                for k in range(2):
-                    bgr = degrade(cv2.cvtColor(P[i, k], cv2.COLOR_RGB2BGR), s)
-                    f = faces[i, k].copy()
-                    t0 = time.perf_counter(); v = fn(bgr, f); t.append(time.perf_counter() - t0)
-                    e.append(v / (np.linalg.norm(v) + 1e-12))
-                sims[i] = float(e[0] @ e[1])
+            E = None; t = []
+            for i in np.where(img_ok)[0]:
+                bgr = degrade(cv2.imread(imgs[i]), s)
+                t0 = time.perf_counter(); v = fn(bgr, faces[i].copy()); t.append(time.perf_counter() - t0)
+                if E is None: E = np.zeros((len(imgs), v.size), np.float32)
+                E[i] = v / (np.linalg.norm(v) + 1e-12)
+            sims = np.where(ok, (E[A] * E[B]).sum(1), -1.0)
             # 표준 10-fold: 9 fold 에서 정확도 최대 임계값 → 남은 fold 정확도
             accs = []
             for k in range(10):
