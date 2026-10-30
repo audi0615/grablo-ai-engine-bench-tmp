@@ -2,6 +2,7 @@
 얼굴 인식 정렬 5점 — (a) 검출(YuNet, 긴 변 480) 5점 그대로 대 (b) 제품의 확대 재측정(MobileFaceNetModel::alignFiveFromCrop:
 검출 상자 크롭을 4.4배 검은 정사각 캔버스 가운데 → 640² YuNet → IoU ≥ 0.3 검출의 5점). 인식은 SFace(ORT) 같은 것으로.
   CCTV 를 흉내 낸다: LFW 사진을 1920×1080 회색 프레임 안에 얼굴 폭 F px 로 축소해 넣는다(F = 60 · 80 · 120 · 200).
+  (c) 검출 5점 + 크롭 정렬(제품 (b) 와 같은 정렬 원천 — 크롭 밖은 검정)도 함께 잰다: 큰 얼굴에서 (b) 를 대신할 후보.
   두 방식은 **같은 검출 결과**를 쓰고 5점만 다르다. 검출 실패 쌍은 두 방식에서 함께 빠진다.
   지표: LFW 표준 6000쌍 10-fold 정확도, TAR@FAR 1e-3 · 1e-2, 비용(YuNet 호출 수).
 usage: python face_align_compare.py <models_dir> <out_dir> [long_side=480]
@@ -21,7 +22,7 @@ yunet = ort.InferenceSession(os.path.join(M, "yunet_2026may.onnx"), so, provider
 sface = ort.InferenceSession(os.path.join(M, "face_recognition_sface_2021dec.onnx"), so, providers=["CPUExecutionProvider"])
 YN = [o.name for o in yunet.get_outputs()]
 FW, FH, ZOOM, AGREE = 1920, 1080, 4.4, 0.3
-SIZES = [60, 80, 120, 200]
+SIZES = [60, 80, 100, 120, 160, 200]
 
 
 def iou_xywh(a, b):
@@ -107,8 +108,8 @@ def metrics(E, ok):
 
 res = {"long_side": L, "sizes": {}}
 for F in SIZES:
-    Ea = np.zeros((len(imgs), 128), np.float32); Eb = np.zeros_like(Ea); ok_img = np.zeros(len(imgs), bool)
-    t0 = time.time(); zoom_fail = 0
+    Ea = np.zeros((len(imgs), 128), np.float32); Eb = np.zeros_like(Ea); Ec = np.zeros_like(Ea); ok_img = np.zeros(len(imgs), bool)
+    t0 = time.time(); zoom_fail = 0; det_w = np.zeros(len(imgs))
     for i, p in enumerate(imgs):
         if base_w[i] <= 0: continue
         src = cv2.cvtColor(cv2.imread(p), cv2.COLOR_BGR2RGB); k = F / base_w[i]
@@ -126,9 +127,14 @@ for F in SIZES:
         if zk is None: zoom_fail += 1; continue      # 제품은 정렬 실패면 그 얼굴을 인식하지 않는다 — 두 방식에서 함께 뺀다
         Ea[i] = embed(frame, kp)                      # (a) 검출 5점, 원본 프레임에서 정렬
         Eb[i] = embed(crop, zk)                       # (b) 확대 재측정 5점, 크롭에서 정렬(제품과 같다)
-        ok_img[i] = True
+        Ec[i] = embed(crop, kp - np.array([x1, y1], np.float64))   # (c) 검출 5점, 크롭에서 정렬 — (b) 와 같은 정렬 원천
+        ok_img[i] = True; det_w[i] = box[2] * min(1.0, L / max(FW, FH))
     ok = ok_img[A] & ok_img[B]
     r = {"pairs_used": int(ok.sum()), "zoom_refind_fail": zoom_fail, "a_detector_kps": metrics(Ea, ok), "b_zoom_refine": metrics(Eb, ok),
-         "a_vs_b_cos_mean": round(float((Ea[ok_img] * Eb[ok_img]).sum(1).mean()), 4), "sec": round(time.time() - t0)}
+         "c_detector_kps_crop": metrics(Ec, ok),
+         "a_vs_b_cos_mean": round(float((Ea[ok_img] * Eb[ok_img]).sum(1).mean()), 4),
+         "c_vs_b_cos_mean": round(float((Ec[ok_img] * Eb[ok_img]).sum(1).mean()), 4),
+         "c_vs_b_cos_p05": round(float(np.quantile((Ec[ok_img] * Eb[ok_img]).sum(1), 0.05)), 4),
+         "det_face_px_in_input_median": round(float(np.median(det_w[ok_img])), 1), "sec": round(time.time() - t0)}
     res["sizes"][F] = r; print(json.dumps({"face_px": F, **r}), flush=True)
 json.dump(res, open(os.path.join(O, "face_align_compare.json"), "w"), indent=1)
