@@ -84,7 +84,7 @@ jobs:
           for m in nano tiny s; do S=416; [ $m = s ] && S=640
             for cfg in "ncnn 4" "ncnn 2" "ort 4" "ort 2"; do set -- $cfg
               line=$($BIN $1 models $m out/in$S.f32 out/cpp_$1_$m.f32 $2 3)
-              acc=$(python compare.py out yolox_$m $S out/cpp_$1_$m.f32)
+              acc=$(python compare.py out $m $S out/cpp_$1_$m.f32)
               echo "{\"cpp\":$line,\"acc\":$acc}" | tee -a out/cpp_results.jsonl
             done
           done
