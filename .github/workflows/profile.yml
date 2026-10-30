@@ -1,0 +1,21 @@
+name: ort-profile
+on: workflow_dispatch
+jobs:
+  prof:
+    strategy:
+      fail-fast: false
+      matrix: { os: [macos-15-intel, ubuntu-latest, windows-latest, ubuntu-22.04] }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q "numpy<2" onnxruntime==1.17.1
+      - run: curl -sSfL -o osnet.onnx https://downloads.grablo.co/assets/vision/osnet_ain_x1_0_msmt17.onnx
+      - run: python ort_profile.py osnet.onnx out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: prof-${{ matrix.os }}
+          path: out/profile_summary.json
