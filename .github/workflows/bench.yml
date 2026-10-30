@@ -66,4 +66,6 @@ jobs:
           done
       - uses: actions/upload-artifact@v4
         if: always()
-        with: { name: results-${{ matrix.os }}, path: out/*.json* }
+        with:
+          name: results-${{ matrix.os }}
+          path: out/*.json*
