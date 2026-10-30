@@ -2,6 +2,7 @@
 // usage: bench <ncnn|ort> <model_dir> <nano|tiny|s> <input.f32> <out.f32> <threads> <seconds>
 #include <ncnn/net.h>
 #include <ncnn/layer.h>
+#include <ncnn/cpu.h>
 #include <onnxruntime_cxx_api.h>
 #include <algorithm>
 #include <chrono>

@@ -51,7 +51,7 @@ jobs:
       - name: build ncnn 20260113 (제품과 같은 판, CPU)
         run: |
           curl -sSfL -o ncnn.tar.gz https://github.com/Tencent/ncnn/archive/refs/tags/20260113.tar.gz && tar -xzf ncnn.tar.gz
-          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-G "Visual Studio 17 2022" -A ${{ matrix.arch }}); else GEN=(); fi
+          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-A ${{ matrix.arch }}); else GEN=(); fi
           cmake -S ncnn-20260113 -B ncnn-build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DNCNN_VULKAN=OFF -DNCNN_BUILD_TOOLS=OFF -DNCNN_BUILD_EXAMPLES=OFF -DNCNN_BUILD_BENCHMARK=OFF -DNCNN_BUILD_TESTS=OFF -DCMAKE_INSTALL_PREFIX=$PWD/ncnn-install > /dev/null
           cmake --build ncnn-build --config Release -j 4 --target install > ncnn-build.log 2>&1 || (tail -40 ncnn-build.log; exit 1)
       - name: ORT 1.17.1 prebuilt
@@ -60,10 +60,10 @@ jobs:
           if [ "${{ matrix.ext }}" = "zip" ]; then unzip -q ort.zip; else tar -xzf ort.tgz; fi
       - name: build C++ bench
         run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-G "Visual Studio 17 2022" -A ${{ matrix.arch }}); else GEN=(); fi
+          if [ "$RUNNER_OS" = "Windows" ]; then GEN=(-A ${{ matrix.arch }}); else GEN=(); fi
           NCNN_CFG=$(dirname $(find $PWD/ncnn-install -name ncnnConfig.cmake | head -1))
           cmake -S cpp -B cpp-build "${GEN[@]}" -DCMAKE_BUILD_TYPE=Release -DNCNN_DIR=$NCNN_CFG -DORT_DIR=$PWD/${{ matrix.ort }} > /dev/null
-          cmake --build cpp-build --config Release -j 4 2>&1 | tail -5
+          cmake --build cpp-build --config Release -j 4 > cpp-build.log 2>&1 || (grep -iE "error" cpp-build.log | head -30; exit 1)
           BIN=$(find cpp-build -name 'bench' -type f -o -name 'bench.exe' -type f | head -1); echo "BIN=$BIN" >> $GITHUB_ENV
           if [ "$RUNNER_OS" = "Windows" ]; then cp ${{ matrix.ort }}/lib/*.dll $(dirname $BIN)/; fi
       - name: C++ bench (ncnn vs ORT, YOLOX)
