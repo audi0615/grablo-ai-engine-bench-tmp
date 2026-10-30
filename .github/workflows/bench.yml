@@ -1,15 +1,27 @@
 name: ai-engine-bench
 on: workflow_dispatch
 jobs:
+  prep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1
+      - run: bash fetch.sh
+      - run: PREP_ONLY=1 python bench.py models img prep 3 && ls -la prep
+      - uses: actions/upload-artifact@v4
+        with: { name: prep, path: prep }
   bench:
+    needs: prep
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest,    ort: onnxruntime-linux-x64-1.17.1,     ext: tgz, arch: x64 }
-          - { os: ubuntu-24.04-arm, ort: onnxruntime-linux-aarch64-1.17.1, ext: tgz, arch: arm64 }
-          - { os: windows-latest,   ort: onnxruntime-win-x64-1.17.1,       ext: zip, arch: x64 }
-          - { os: windows-11-arm,   ort: onnxruntime-win-arm64-1.17.1,     ext: zip, arch: ARM64 }
+          - { os: ubuntu-latest,    ort: onnxruntime-linux-x64-1.17.1,     ext: tgz, arch: x64,   py: true }
+          - { os: ubuntu-24.04-arm, ort: onnxruntime-linux-aarch64-1.17.1, ext: tgz, arch: arm64, py: true }
+          - { os: windows-latest,   ort: onnxruntime-win-x64-1.17.1,       ext: zip, arch: x64,   py: true }
+          - { os: windows-11-arm,   ort: onnxruntime-win-arm64-1.17.1,     ext: zip, arch: ARM64, py: false }
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     defaults: { run: { shell: bash } }
@@ -17,25 +29,24 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
+      - uses: actions/download-artifact@v4
+        with: { name: prep, path: out }
       - name: python deps
         run: |
-          python -m pip install -q numpy opencv-python-headless
-          python -m pip install -q onnxruntime==1.17.1 || python -m pip install -q onnxruntime
-          python -m pip install -q openvino || echo "openvino wheel unavailable on this runner"
-      - name: models and images (공식 출처·CDN)
-        run: |
-          mkdir -p models/lpr img
-          for m in nano tiny s; do curl -sSfL -o models/yolox_$m.onnx https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_$m.onnx; done
-          for f in yolox_nano_v2.param yolox_nano_v2.bin yolox_tiny_v2.param yolox_tiny_v2.bin yolox_s.param yolox_s.bin osnet_ain_x1_0_msmt17.onnx siglip2_b32_256_vision.onnx; do curl -sSfL -o models/$f https://downloads.grablo.co/assets/vision/$f; done
-          curl -sSfL -o lpr.tar https://downloads.grablo.co/assets/lpr/grablo-lpr-latin-v1.tar && tar -xf lpr.tar && cp grablo-lpr-latin-v1/*.onnx models/lpr/
-          curl -sSfL -o img/bus.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/bus.jpg
-          curl -sSfL -o img/dog.jpg https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/assets/dog.jpg
-          curl -sSfL -o img/zidane.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/zidane.jpg
-          curl -sSfL -o img/zz_plate.png https://raw.githubusercontent.com/ankandrew/fast-alpr/master/assets/test_image.png
-          ls -la models models/lpr img
+          if [ "${{ matrix.py }}" = "true" ]; then
+            # ORT 1.17.1 휠은 numpy 1.x 로 빌드됐다 — numpy 2 와 함께 쓰면 import 실패
+            python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1
+            python -m pip install -q openvino || echo "openvino wheel unavailable on this runner"
+          else
+            python -m pip install -q numpy   # compare.py 만
+          fi
+      - name: models and images
+        run: bash fetch.sh
       - name: python bench (ORT 1.17.1 vs OpenVINO 기본 정밀도)
+        if: matrix.py
         run: python bench.py models img out 3
       - name: python bench (OpenVINO f32 고정)
+        if: matrix.py
         run: OV_PREC=f32 SKIP_ORT=1 python bench.py models img out_f32 3 && cp out_f32/py_results.json out/py_results_ov_f32.json
       - name: build ncnn 20260113 (제품과 같은 판, CPU)
         run: |

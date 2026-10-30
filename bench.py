@@ -8,6 +8,7 @@ import onnxruntime as ort
 CORE = None
 OV_PREC = os.environ.get("OV_PREC", "")          # "" = OpenVINO 기본 정밀도, "f32" = 고정
 SKIP_ORT = os.environ.get("SKIP_ORT") == "1"      # 두 번째 실행(정밀도만 바꿈)에서는 ORT 시간을 다시 재지 않는다
+PREP_ONLY = os.environ.get("PREP_ONLY") == "1"    # C++ 벤치용 입력·ORT 기준 출력만 만들고 끝낸다(prep 잡)
 OV_NAME = "openvino" + ("_" + OV_PREC if OV_PREC else "")
 
 M, I, O = sys.argv[1:4]
@@ -107,6 +108,7 @@ def main():
         ref = ref_s.run(None, {"images": x})[0]; ref.astype(np.float32).tofile(os.path.join(O, f"ref_yolox_{m}.f32"))
         json.dump([sc, imgs[0].shape[1], imgs[0].shape[0]], open(os.path.join(O, f"meta{S}.json"), "w"))
         ref_d = decode_yolox(ref, S, sc, imgs[0].shape[1], imgs[0].shape[0])
+        if PREP_ONLY: continue
         if m == "s":   # 사람 크롭(ReID·SigLIP 입력) — 모든 이미지에서
             for im in imgs:
                 xi, sci = letterbox_yolox(im, S); di = decode_yolox(ref_s.run(None, {"images": xi})[0], S, sci, im.shape[1], im.shape[0])
@@ -116,6 +118,7 @@ def main():
             if CORE:
                 c = ov_model(path, th); r = c.create_infer_request(); o = r.infer({0: x})[0]
                 emit({"engine": OV_NAME, "model": f"yolox_{m}", "threads": th, **timeit(lambda: r.infer({0: x})), "acc": match(ref_d, decode_yolox(o, S, sc, imgs[0].shape[1], imgs[0].shape[0]))})
+    if PREP_ONLY: return
 
 
     def embed_bench(name, path, X, inname, out_index, threads):
