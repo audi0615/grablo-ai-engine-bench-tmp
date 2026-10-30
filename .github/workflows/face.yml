@@ -8,7 +8,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
-      - run: python -m pip install -q numpy "opencv-python-headless==4.10.0.84" onnxruntime ncnn scikit-learn
+      - run: python -m pip install -q numpy "opencv-python-headless==4.10.0.84" onnxruntime ncnn scikit-learn pillow
       - name: models (제품 CDN · 공식 배포처)
         run: |
           mkdir -p fm
