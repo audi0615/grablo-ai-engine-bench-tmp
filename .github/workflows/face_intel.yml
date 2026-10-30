@@ -1,0 +1,25 @@
+name: face-coreml-intel
+on: workflow_dispatch
+jobs:
+  intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1 "coremltools==9.0" scikit-learn pillow
+      - name: models (OpenCV Zoo 공식 ONNX + 이 저장소의 Core ML 변환본)
+        run: |
+          mkdir -p m && cp -R coreml/yunet_2026may.mlpackage coreml/face_recognition_sface_2021dec.mlpackage m/
+          curl -sSfL -o m/yunet_2026may.onnx https://media.githubusercontent.com/media/opencv/opencv_zoo/main/models/face_detection_yunet/face_detection_yunet_2026may.onnx
+          curl -sSfL -o m/face_recognition_sface_2021dec.onnx https://huggingface.co/opencv/face_recognition_sface/resolve/main/face_recognition_sface_2021dec.onnx
+          shasum -a 256 m/*.onnx
+      - name: WIDER FACE val (CUHK 공식 데이터셋 미러)
+        run: curl -sSfL -o wv.zip https://huggingface.co/datasets/CUHK-CSE/wider_face/resolve/main/data/WIDER_val.zip && unzip -q wv.zip && ls WIDER_val/images | head -3
+      - run: python face_coreml_intel.py m WIDER_val/images out 300
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: face-coreml-intel
+          path: out/face_coreml_intel.json

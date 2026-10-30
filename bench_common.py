@@ -1,5 +1,18 @@
 import numpy as np
 
+ARCFACE_DST = np.array([[38.2946, 51.6963], [73.5318, 51.5014], [56.0252, 71.7366],
+                        [41.5493, 92.3655], [70.7299, 92.2041]], np.float64)
+
+
+def similarity_to_arc(src):
+    """제품 MobileFaceNetModel.cpp similarityToArc 를 줄 단위로 옮긴 것 — 5점 → arcface_dst 최소제곱 닮음변환(2×3)."""
+    ms, md = src.mean(0), ARCFACE_DST.mean(0)
+    x, d = src - ms, ARCFACE_DST - md
+    den = (x ** 2).sum()
+    a = (x[:, 0] * d[:, 0] + x[:, 1] * d[:, 1]).sum() / den
+    b = (x[:, 0] * d[:, 1] - x[:, 1] * d[:, 0]).sum() / den
+    return np.array([[a, -b, md[0] - (a * ms[0] - b * ms[1])], [b, a, md[1] - (b * ms[0] + a * ms[1])]], np.float64)
+
 def decode_yolox(out, S, sc, W, H):
     out = out.reshape(-1, 85); dets = []; i = 0
     for s in (8, 16, 32):
