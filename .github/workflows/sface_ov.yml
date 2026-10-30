@@ -1,0 +1,25 @@
+name: sface-ov
+on: workflow_dispatch
+jobs:
+  sface:
+    strategy:
+      fail-fast: false
+      matrix: { os: [windows-latest, ubuntu-latest, ubuntu-22.04, windows-2022] }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1 openvino scikit-learn pillow
+      - name: models (제품 CDN)
+        run: |
+          mkdir -p m
+          for f in yunet_2026may.onnx face_recognition_sface_2021dec.onnx; do curl -sSfL -o m/$f https://downloads.grablo.co/assets/vision/$f; done
+      - run: python sface_ov_check.py m out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sface-ov-${{ matrix.os }}
+          path: out/sface_ov_check.json
