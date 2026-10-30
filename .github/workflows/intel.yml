@@ -1,0 +1,31 @@
+name: intel-check
+on: workflow_dispatch
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix: { os: [macos-15-intel, ubuntu-latest, windows-latest] }
+    runs-on: ${{ matrix.os }}
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1
+      - if: runner.os == 'macOS'
+        run: python -m pip install -q "coremltools==9.0"
+      - name: models
+        run: |
+          mkdir -p m; V=https://downloads.grablo.co/assets/vision
+          for n in osnet_ain_x1_0_msmt17 siglip2_b32_256_vision; do
+            curl -sSfL -o m/$n.onnx $V/$n.onnx
+            for f in Manifest.json Data/com.apple.CoreML/model.mlmodel Data/com.apple.CoreML/weights/weight.bin; do
+              mkdir -p "m/$n.mlpackage/$(dirname $f)"; curl -sSfL -o "m/$n.mlpackage/$f" "$V/$n.mlpackage/$f"; done
+          done
+          curl -sSfL -o bus.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/bus.jpg
+      - run: python intel_check.py m bus.jpg out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: intel-${{ matrix.os }}
+          path: out
