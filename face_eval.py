@@ -3,9 +3,13 @@
   current  : 제품 mobilefacenet(ncnn, data→fc1, RGB, 그래프 안에서 (x-127.5)/128)
   sface    : OpenCV Zoo SFace(Apache-2.0) — OpenCV 공식 API(alignCrop · feature)
   auraface : fal/AuraFace-v1 glintr100(Apache-2.0) — InsightFace ArcFace 규약((x-127.5)/127.5, RGB)
+  sface_ort · sface_ov_cpu · sface_ov_gpu · sface_ov_gpu_f32 : 같은 SFace 를 **제품에 넣을 경로**로 — 제품 정렬
+    (MobileFaceNetModel.cpp similarityToArc, 최소제곱 닮음변환) + 공식 전처리(face_recognize.cpp feature():
+    blobFromImage(aligned, 1, 112×112, mean 0, swapRB) = 0~255 RGB 무정규화) + ORT / OpenVINO(CPU · 내장 GPU).
+    공식 API(sface)와 같은 정확도인지, OpenVINO 가 정확도를 지키는지 본다.
 정렬: 제품과 같은 YuNet 5점 → arcface_dst 닮음변환 112×112. 5점은 **원본 해상도에서 한 번** 재고
   해상도 조건마다 같은 점을 쓴다 — 인식 모델만 비교되도록.
-usage: python face_eval.py <models_dir> <out_dir>
+usage: python face_eval.py <models_dir> <out_dir>   (FACE_MODELS=이름,이름 으로 고른다 — 기본은 전부)
 """
 import json, os, sys, time
 import numpy as np, cv2
@@ -13,6 +17,7 @@ import onnxruntime as ort
 import ncnn
 from sklearn.datasets import fetch_lfw_pairs
 from sklearn.metrics import roc_auc_score, roc_curve
+from bench_common import similarity_to_arc   # 제품 similarityToArc
 
 M, O = sys.argv[1:3]
 os.makedirs(O, exist_ok=True)
@@ -28,7 +33,7 @@ def norm_crop(bgr, kps):
 
 
 def degrade(bgr, s):
-    if s == 1.0: return bgr
+    if s >= 1.0: return bgr
     h, w = bgr.shape[:2]
     small = cv2.resize(bgr, (max(1, round(w * s)), max(1, round(h * s))), interpolation=cv2.INTER_AREA)
     return cv2.resize(small, (w, h), interpolation=cv2.INTER_LINEAR)
@@ -49,9 +54,28 @@ def main():
     rec_sf = cv2.FaceRecognizerSF.create(os.path.join(M, "sface.onnx"), "")
     net = ncnn.Net(); net.opt.num_threads = 4
     net.load_param(os.path.join(M, "mobilefacenet.param")); net.load_model(os.path.join(M, "mobilefacenet.bin"))
+    WANT = set(os.environ["FACE_MODELS"].split(",")) if os.environ.get("FACE_MODELS") else None
+    want = lambda n: WANT is None or n in WANT
     so = ort.SessionOptions(); so.intra_op_num_threads = 4
-    aura = ort.InferenceSession(os.path.join(M, "auraface.onnx"), so, providers=["CPUExecutionProvider"])
-    aura_in = aura.get_inputs()[0].name
+    if want("auraface"):
+        aura = ort.InferenceSession(os.path.join(M, "auraface.onnx"), so, providers=["CPUExecutionProvider"])
+        aura_in = aura.get_inputs()[0].name
+    sface_path = os.path.join(M, "sface.onnx")
+    sf_ort = ort.InferenceSession(sface_path, so, providers=["CPUExecutionProvider"])
+    sf_in = sf_ort.get_inputs()[0].name
+    sf_ov = {}
+    if any(want(n) for n in ("sface_ov_cpu", "sface_ov_gpu", "sface_ov_gpu_f32")):
+        import openvino as ov
+        core = ov.Core()
+        for n, dev, cfg in (("sface_ov_cpu", "CPU", {"INFERENCE_NUM_THREADS": 4}), ("sface_ov_gpu", "GPU", {}),
+                            ("sface_ov_gpu_f32", "GPU", {"INFERENCE_PRECISION_HINT": "f32"})):
+            if want(n):
+                m = core.read_model(sface_path); m.reshape({m.input().get_any_name(): [1, 3, 112, 112]})
+                sf_ov[n] = core.compile_model(m, dev, {"PERFORMANCE_HINT": "LATENCY", **cfg}).create_infer_request()
+
+    def sface_blob(bgr, f):   # 제품 경로: 제품 정렬 → RGB 0~255 무정규화 NCHW
+        al = cv2.warpAffine(bgr, similarity_to_arc(f[4:14].reshape(5, 2).astype(np.float64)), (112, 112), flags=cv2.INTER_LINEAR)
+        return cv2.cvtColor(al, cv2.COLOR_BGR2RGB).astype(np.float32).transpose(2, 0, 1)[None]
 
     def detect(bgr):
         _, f = det.detect(bgr)
@@ -73,7 +97,11 @@ def main():
         x = ((rgb - 127.5) / 127.5).transpose(2, 0, 1)[None]
         return aura.run(None, {aura_in: x})[0].reshape(-1)
 
-    MODELS = {"current_mobilefacenet": emb_current, "sface": emb_sface, "auraface": emb_aura}
+    MODELS = {"current_mobilefacenet": emb_current, "sface": emb_sface, "auraface": emb_aura,
+              "sface_ort": lambda bgr, f: sf_ort.run(None, {sf_in: sface_blob(bgr, f)})[0].reshape(-1)}
+    for n, req in sf_ov.items():
+        MODELS[n] = lambda bgr, f, req=req: req.infer({0: sface_blob(bgr, f)})[0].reshape(-1).copy()
+    MODELS = {n: fn for n, fn in MODELS.items() if want(n)}
 
     # 5점은 원본에서 한 번(이미지별)
     faces = np.full((len(imgs), 15), np.nan, np.float32)
@@ -82,6 +110,12 @@ def main():
         if f is not None: faces[i] = f
     print(json.dumps({"yunet_miss": int(np.isnan(faces).any(1).sum())}), flush=True)
     img_ok = ~np.isnan(faces).any(1)
+    # FACE_PX=112,96,... — 얼굴 상자(YuNet 폭) 한 변 px 로 조건을 준다: 배율 = px / 원본 상자 폭 중앙값
+    global SCALES
+    box_w = float(np.median(faces[img_ok, 2]))
+    if os.environ.get("FACE_PX"):
+        SCALES = [round(int(p) / box_w, 4) for p in os.environ["FACE_PX"].split(",")]
+    print(json.dumps({"box_w_median": round(box_w, 1), "scales": SCALES}), flush=True)
     A = np.array([idx[p[0]] for p in pairs]); B = np.array([idx[p[1]] for p in pairs])
     ok = img_ok[A] & img_ok[B]
 
@@ -96,6 +130,11 @@ def main():
                 if E is None: E = np.zeros((len(imgs), v.size), np.float32)
                 E[i] = v / (np.linalg.norm(v) + 1e-12)
             sims = np.where(ok, (E[A] * E[B]).sum(1), -1.0)
+            # 이미지별 벡터 · 사람 — 다른 사람 쌍을 전수로 만들어 낮은 오인식률까지 재려고(face_threshold_calibrate.py)
+            np.savez(os.path.join(O, f"emb_{name}_{s}.npz"), E=E, ok=img_ok,
+                     person=np.array([os.path.basename(os.path.dirname(p)) for p in imgs]))
+            # 같은 오인식률 보정(face_calibrate.py)용 — 쌍별 코사인 · 정답 · 유효 여부
+            np.savez(os.path.join(O, f"sims_{name}_{s}.npz"), sims=sims, y=y, ok=ok)
             # 표준 10-fold: 9 fold 에서 정확도 최대 임계값 → 남은 fold 정확도
             accs = []
             for k in range(10):
@@ -104,7 +143,7 @@ def main():
                 accs.append(((sims[te] >= best) == y[te]).mean())
             fpr, tpr, _ = roc_curve(y[ok], sims[ok])
             tar = lambda far: float(np.interp(far, fpr, tpr))
-            r = {"scale": s, "model": name, "acc10": round(float(np.mean(accs)) * 100, 2), "acc_std": round(float(np.std(accs)) * 100, 2),
+            r = {"scale": s, "face_px": round(s * box_w), "model": name, "acc10": round(float(np.mean(accs)) * 100, 2), "acc_std": round(float(np.std(accs)) * 100, 2),
                  "auc": round(float(roc_auc_score(y[ok], sims[ok])), 4), "tar@far1e-2": round(tar(1e-2), 4), "tar@far1e-3": round(tar(1e-3), 4),
                  "ms_per_face": round(float(np.median(t)) * 1e3, 2), "pairs": int(ok.sum())}
             results.append(r); print(json.dumps(r), flush=True)

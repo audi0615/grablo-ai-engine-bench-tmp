@@ -1,0 +1,24 @@
+name: face-size
+on: workflow_dispatch
+jobs:
+  face:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: python -m pip install -q numpy "opencv-python-headless==4.10.0.84" onnxruntime==1.17.1 ncnn scikit-learn pillow
+      - name: models (제품 CDN · 공식 배포처)
+        run: |
+          mkdir -p fm
+          for f in mobilefacenet.param mobilefacenet.bin yunet_2023mar.onnx; do curl -sSfL -o fm/$f https://downloads.grablo.co/assets/vision/$f; done
+          curl -sSfL -o fm/sface.onnx https://downloads.grablo.co/assets/vision/face_recognition_sface_2021dec.onnx
+          sha256sum fm/*; ls -la fm
+      # 옛 모델(MobileFaceNet) 과 제품 경로의 SFace(ORT) — 얼굴 한 변 px 별
+      - run: FACE_MODELS=current_mobilefacenet,sface_ort FACE_PX=112,96,80,64,56,48,40,32,24 python face_eval.py fm fout
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: facesize-results
+          path: fout/face_results.json
