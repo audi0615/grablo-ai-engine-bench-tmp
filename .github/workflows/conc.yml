@@ -1,0 +1,35 @@
+name: conc-bench
+on:
+  workflow_dispatch:
+    inputs:
+      seconds: { description: 'seconds per case', default: '8' }
+      rounds: { description: 'rounds', default: '3' }
+jobs:
+  conc:
+    strategy:
+      fail-fast: false
+      matrix: { os: [windows-latest, windows-2022, windows-2025, ubuntu-latest, ubuntu-22.04, ubuntu-24.04] }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      # 제품과 같은 판: ORT 1.17.1 · OpenVINO 2026.1.0
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1 openvino==2026.1.0
+      - name: cpu
+        run: |
+          python -c "import os, platform; print(platform.platform(), os.cpu_count())"
+          if [ "$RUNNER_OS" = "Windows" ]; then powershell -c "(Get-CimInstance Win32_Processor).Name" | tee cpu.txt; else grep -m1 'model name' /proc/cpuinfo | tee cpu.txt; fi
+      - name: models
+        run: |
+          mkdir -p m/lpr; V=https://downloads.grablo.co/assets/vision
+          for f in yolox_tiny.onnx osnet_ain_x1_0_msmt17.onnx siglip2_b32_256_vision.onnx face_recognition_sface_2021dec.onnx; do curl -sSfL -o m/$f $V/$f; done
+          curl -sSfL -o lpr.tar https://downloads.grablo.co/assets/lpr/grablo-lpr-latin-v1.tar && tar -xf lpr.tar && cp grablo-lpr-latin-v1/detector.onnx m/lpr/
+          curl -sSfL -o bus.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/bus.jpg
+          ls -la m m/lpr
+      - run: python conc.py m bus.jpg out.jsonl ${{ inputs.seconds }} ${{ inputs.rounds }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: conc-${{ matrix.os }}, path: "out.jsonl\ncpu.txt" }
