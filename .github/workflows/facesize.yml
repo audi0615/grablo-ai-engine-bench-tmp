@@ -9,13 +9,14 @@ jobs:
       - uses: actions/setup-python@v5
         with: { python-version: '3.12' }
       - run: python -m pip install -q "numpy<2" "opencv-python-headless==4.10.0.84" onnxruntime==1.17.1 ncnn scikit-learn pillow
-      - name: models (?쒗뭹 CDN 쨌 怨듭떇 諛고룷泥?
+      - name: models (product CDN)
         run: |
           mkdir -p fm
           for f in mobilefacenet.param mobilefacenet.bin yunet_2023mar.onnx; do curl -sSfL -o fm/$f https://downloads.grablo.co/assets/vision/$f; done
           curl -sSfL -o fm/sface.onnx https://downloads.grablo.co/assets/vision/face_recognition_sface_2021dec.onnx
           sha256sum fm/*; ls -la fm
-      # ??紐⑤뜽(MobileFaceNet) 怨??쒗뭹 寃쎈줈??SFace(ORT) ???쇨뎬 ??蹂 px 蹂?      - run: FACE_MODELS=current_mobilefacenet,sface_ort FACE_PX=112,96,80,64,56,48,40,32,24 python face_eval.py fm fout
+      # old model (MobileFaceNet) vs product-path SFace (ORT), by face box side in px
+      - run: FACE_MODELS=current_mobilefacenet,sface_ort FACE_PX=112,96,80,64,56,48,40,32,24 python face_eval.py fm fout
       - uses: actions/upload-artifact@v4
         if: always()
         with:
