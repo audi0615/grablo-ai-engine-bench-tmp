@@ -1,0 +1,33 @@
+name: intel-coreml-all
+on:
+  workflow_dispatch:
+    inputs:
+      csec: { description: '동시 처리량 측정 초', default: '20' }
+jobs:
+  bench:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    defaults: { run: { shell: bash } }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.11' }
+      - run: python -m pip install -q "numpy<2" "opencv-python-headless<4.12" onnxruntime==1.17.1 coremltools==9.0
+      - name: models (제품 CDN 과 같은 파일)
+        run: |
+          set -e; mkdir -p m/lpr m/lpr_cm img; V=https://downloads.grablo.co/assets/vision
+          for n in yolox_nano yolox_tiny yolox_s osnet_ain_x1_0_msmt17 siglip2_b32_256_vision face_recognition_sface_2021dec yunet_2026may; do curl -sSfL -o m/$n.onnx $V/$n.onnx; done
+          for n in yolox_nano yolox_tiny yolox_s osnet_ain_x1_0_msmt17 siglip2_b32_256_vision face_recognition_sface_2021dec yunet_2026may_480; do
+            for f in Manifest.json Data/com.apple.CoreML/model.mlmodel Data/com.apple.CoreML/weights/weight.bin; do
+              mkdir -p "m/$n.mlpackage/$(dirname $f)"; curl -sSfL -o "m/$n.mlpackage/$f" "$V/$n.mlpackage/$f"; done; done
+          curl -sSfL -o lpr.tar https://downloads.grablo.co/assets/lpr/grablo-lpr-latin-v1.tar && tar -xf lpr.tar && cp grablo-lpr-latin-v1/*.onnx m/lpr/
+          curl -sSfL -o lprc.tar https://downloads.grablo.co/assets/lpr/grablo-lpr-latin-v1-coreml.tar && mkdir -p lprc && tar -xf lprc.tar -C lprc && find lprc -maxdepth 3 -name '*.mlpackage' -exec cp -R {} m/lpr_cm/ \;
+          curl -sSfL -o img/bus.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/bus.jpg
+          curl -sSfL -o img/dog.jpg https://raw.githubusercontent.com/Megvii-BaseDetection/YOLOX/main/assets/dog.jpg
+          curl -sSfL -o img/zidane.jpg https://github.com/ultralytics/assets/releases/download/v0.0.0/zidane.jpg
+          curl -sSfL -o img/zz_plate.png https://raw.githubusercontent.com/ankandrew/fast-alpr/master/assets/test_image.png
+      - run: system_profiler SPDisplaysDataType SPHardwareDataType || true
+      - run: CSEC=${{ inputs.csec }} python intel_coreml_all.py m img out
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with: { name: intel-coreml-all, path: out }
